@@ -1,0 +1,37 @@
+name: Check
+on: [push, pull_request]
+
+jobs:
+  host:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked --workspace --lib
+      - run: cargo test --locked -p satboot-xtask
+      - run: cargo clippy --locked --workspace --lib -- -D warnings
+      - run: cargo clippy --locked -p satboot-xtask --all-targets -- -D warnings
+  firmware:
+    strategy:
+      matrix:
+        board: [bpi-f3, muse-card, muse-pi-pro]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo xtask build --board ${{ matrix.board }}
+      - run: cargo clippy --locked -p satboot --release --target riscv64imac-unknown-none-elf --no-default-features --features board-${{ matrix.board }},ddr --bins -- -D warnings
+      - uses: actions/upload-artifact@v4
+        with:
+          name: satboot-${{ matrix.board }}
+          path: |
+            target/${{ matrix.board }}/*.elf
+            target/${{ matrix.board }}/*.bin
+            target/${{ matrix.board }}/*.map
+            LICENSE-MIT
+            LICENSE-MULAN
+            DDR-FIRMWARE-LICENSE
+            NOTICE.md

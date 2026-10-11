@@ -1,0 +1,13 @@
+[package]
+name = "satboot-xtask"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR MulanPSL-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+object = { version = "0.40", default-features = false, features = ["read", "std", "elf"] }
+rsa = { version = "0.9", features = ["sha2"] }
+sha2 = { version = "0.10", features = ["oid"] }

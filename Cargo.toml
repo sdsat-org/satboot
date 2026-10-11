@@ -1,0 +1,71 @@
+[workspace]
+resolver = "3"
+members = [".", "macros", "xtask"]
+default-members = [".", "macros", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR MulanPSL-2.0"
+repository = "https://github.com/sdsat-org/satboot"
+
+[package]
+name = "satboot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bootloader for satellite firmware and system software."
+publish = false
+default-run = "satboot"
+
+[dependencies]
+eeprom24x = "0.7.2"
+embedded-hal = "1.0.0"
+embedded-io = "0.7.1"
+embedded-storage = "0.3.1"
+measurements = { version = "0.11.1", default-features = false }
+riscv = { version = "0.16.1", default-features = false }
+qspi-nor = { git = "https://atomgit.com/rustsbi/spacemit-hal.git", rev = "69529cce3021c7b6d50aa004cfcdd3d3db79b3bf" }
+spacemit-hal = { git = "https://atomgit.com/rustsbi/spacemit-hal.git", rev = "69529cce3021c7b6d50aa004cfcdd3d3db79b3bf" }
+spacemit-p1 = { git = "https://atomgit.com/rustsbi/spacemit-hal.git", rev = "69529cce3021c7b6d50aa004cfcdd3d3db79b3bf" }
+spacemit-rt = { git = "https://atomgit.com/rustsbi/spacemit-hal.git", rev = "69529cce3021c7b6d50aa004cfcdd3d3db79b3bf", features = ["k1-bootrom"] }
+satboot-macros = { path = "macros" }
+spin = { version = "0.9.9", default-features = false, features = ["once", "spin_mutex"] }
+ufmt = "0.2.0"
+
+[features]
+default = ["board-muse-pi-pro", "ddr"]
+board-bpi-f3 = []
+board-muse-card = []
+board-muse-pi-pro = []
+ddr = []
+
+[build-dependencies]
+sha2 = "0.10"
+
+[[bin]]
+name = "satboot"
+path = "src/main.rs"
+required-features = ["ddr"]
+test = false
+bench = false
+
+[[bin]]
+name = "hello-world"
+test = false
+bench = false
+
+[[bin]]
+name = "eeprom-info"
+test = false
+bench = false
+
+[profile.release]
+opt-level = "s"
+debug = true
+# LLVM 22 loses ISA features while inspecting RISC-V module assembly under LTO.
+# Keep startup assembly on the non-LTO path (rust-lang/rust#111637).
+lto = "off"
+codegen-units = 1
+panic = "abort"

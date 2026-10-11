@@ -1,0 +1,293 @@
+//! Compile-time board selection and pure EEPROM compatibility checks.
+
+use crate::eeprom;
+
+/// DDR configuration qualified for one board family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DdrSpec {
+    /// Memory technology accepted from EEPROM.
+    pub memory_type: &'static str,
+    /// Populated chip selects.
+    pub chip_selects: u32,
+    /// Transfer rate in MT/s.
+    pub data_rate: u32,
+    /// Transmit termination resistance in ohms.
+    pub tx_odt: u8,
+}
+
+/// Hardware identity and boot parameters selected when building the image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoardSpec {
+    /// Stable command-line and artifact identifier.
+    pub id: &'static str,
+    /// Human-readable board name.
+    pub name: &'static str,
+    /// Exact vendor FIT configuration product name.
+    pub product_name: &'static str,
+    /// Qualified DDR training parameters.
+    pub ddr: DdrSpec,
+}
+
+// Vendor arch/riscv/dts/k1-x_spl.dts; these are board settings, not EEPROM defaults.
+const LPDDR4X: DdrSpec = DdrSpec {
+    memory_type: "LPDDR4X",
+    chip_selects: 2,
+    data_rate: 2400,
+    tx_odt: 80,
+};
+
+/// Banana Pi BPI-F3 with SpacemiT K1.
+pub const BPI_F3: BoardSpec = BoardSpec {
+    id: "bpi-f3",
+    name: "Banana Pi BPI-F3 (K1)",
+    product_name: "k1-x_deb1",
+    ddr: LPDDR4X,
+};
+
+/// MUSE Card with SpacemiT M1.
+pub const MUSE_CARD: BoardSpec = BoardSpec {
+    id: "muse-card",
+    name: "MUSE Card (M1)",
+    product_name: "k1-x_MUSE-Card",
+    ddr: LPDDR4X,
+};
+
+/// MUSE Pi Pro with SpacemiT M1.
+pub const MUSE_PI_PRO: BoardSpec = BoardSpec {
+    id: "muse-pi-pro",
+    name: "MUSE Pi Pro (M1)",
+    product_name: "k1-x_MUSE-Pi-Pro",
+    ddr: LPDDR4X,
+};
+
+/// Invalid compile-time board selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionError {
+    /// No board feature was enabled.
+    Missing,
+    /// More than one board feature was enabled.
+    Multiple,
+}
+
+/// Resolves exactly one board choice without accessing hardware.
+pub const fn select(
+    bpi_f3: bool,
+    muse_card: bool,
+    muse_pi_pro: bool,
+) -> Result<&'static BoardSpec, SelectionError> {
+    match bpi_f3 as u8 + muse_card as u8 + muse_pi_pro as u8 {
+        0 => Err(SelectionError::Missing),
+        1 => Ok(if bpi_f3 {
+            &BPI_F3
+        } else if muse_card {
+            &MUSE_CARD
+        } else {
+            &MUSE_PI_PRO
+        }),
+        _ => Err(SelectionError::Multiple),
+    }
+}
+
+const SELECTION: Result<&BoardSpec, SelectionError> = select(
+    cfg!(feature = "board-bpi-f3"),
+    cfg!(feature = "board-muse-card"),
+    cfg!(feature = "board-muse-pi-pro"),
+);
+
+#[cfg(all(target_arch = "riscv64", target_os = "none"))]
+const _: () = assert!(
+    SELECTION.is_ok(),
+    "select exactly one board feature: board-bpi-f3, board-muse-card or board-muse-pi-pro"
+);
+
+/// Board selected for this firmware; host-only tests can default to MUSE Pi Pro.
+pub const SELECTED: &BoardSpec = match SELECTION {
+    Ok(board) => board,
+    // Target builds reject this path above. Host tests can inspect every board
+    // with no hardware features or Cargo's additive --all-features selection.
+    Err(_) => &MUSE_PI_PRO,
+};
+
+/// EEPROM identity does not establish compatibility with the selected board.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdentityError {
+    /// The board requires a product name that the EEPROM did not provide.
+    MissingProduct,
+    /// The EEPROM describes a different product.
+    ProductMismatch,
+}
+
+/// A recorded DDR field conflicts with this board's qualified configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DdrMismatch {
+    /// Different memory technology.
+    MemoryType,
+    /// Different populated chip-select count.
+    ChipSelects,
+    /// Different transfer rate.
+    DataRate,
+    /// Different transmit termination.
+    TxOdt,
+}
+
+impl BoardSpec {
+    /// Checks an EEPROM product and returns the selected board's exact FIT product.
+    ///
+    /// BPI-F3 EEPROMs can omit the product name. Only that board may use its
+    /// explicit configured product in the absence of a recorded identity.
+    /// This compatibility check is not cryptographic device authentication.
+    pub fn validate_identity(
+        &self,
+        recorded_product: Option<&str>,
+    ) -> Result<&'static str, IdentityError> {
+        match recorded_product {
+            Some(product) if product == self.product_name => Ok(self.product_name),
+            Some(_) => Err(IdentityError::ProductMismatch),
+            None if *self == BPI_F3 => Ok(self.product_name),
+            None => Err(IdentityError::MissingProduct),
+        }
+    }
+
+    /// Validates recorded fields without filling absent EEPROM fields or touching DRAM.
+    pub fn validate_ddr(
+        &self,
+        recorded: Option<&eeprom::DdrConfig<'_>>,
+    ) -> Result<(), DdrMismatch> {
+        let Some(info) = recorded else {
+            return Ok(());
+        };
+        if info
+            .memory_type
+            .is_some_and(|value| !value.eq_ignore_ascii_case(self.ddr.memory_type))
+        {
+            return Err(DdrMismatch::MemoryType);
+        }
+        if info
+            .chip_selects
+            .is_some_and(|value| u32::from(value) != self.ddr.chip_selects)
+        {
+            return Err(DdrMismatch::ChipSelects);
+        }
+        if info
+            .data_rate
+            .is_some_and(|value| u32::from(value) != self.ddr.data_rate)
+        {
+            return Err(DdrMismatch::DataRate);
+        }
+        if info.tx_odt.is_some_and(|value| value != self.ddr.tx_odt) {
+            return Err(DdrMismatch::TxOdt);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_feature_combination_requires_one_board() {
+        for bits in 0u8..8 {
+            let selected = select(bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+            match bits {
+                0 => assert_eq!(selected, Err(SelectionError::Missing)),
+                1 => assert_eq!(selected, Ok(&BPI_F3)),
+                2 => assert_eq!(selected, Ok(&MUSE_CARD)),
+                4 => assert_eq!(selected, Ok(&MUSE_PI_PRO)),
+                _ => assert_eq!(selected, Err(SelectionError::Multiple)),
+            }
+        }
+    }
+
+    #[test]
+    fn all_boards_accept_their_product_and_reject_other_boards() {
+        for board in [BPI_F3, MUSE_CARD, MUSE_PI_PRO] {
+            assert_eq!(
+                board.validate_identity(Some(board.product_name)),
+                Ok(board.product_name)
+            );
+            for other in [BPI_F3, MUSE_CARD, MUSE_PI_PRO] {
+                if board.id != other.id {
+                    assert_eq!(
+                        board.validate_identity(Some(other.product_name)),
+                        Err(IdentityError::ProductMismatch)
+                    );
+                }
+            }
+            assert_eq!(
+                board.validate_identity(Some("")),
+                Err(IdentityError::ProductMismatch)
+            );
+        }
+    }
+
+    #[test]
+    fn absent_bpi_f3_product_uses_explicit_product_only() {
+        assert_eq!(BPI_F3.validate_identity(None), Ok("k1-x_deb1"));
+        assert_eq!(
+            MUSE_CARD.validate_identity(None),
+            Err(IdentityError::MissingProduct)
+        );
+        assert_eq!(
+            MUSE_PI_PRO.validate_identity(None),
+            Err(IdentityError::MissingProduct)
+        );
+    }
+
+    #[test]
+    fn missing_ddr_fields_use_the_qualified_board_settings() {
+        let partial = eeprom::DdrConfig {
+            memory_type: Some("LPDDR4x"),
+            ..Default::default()
+        };
+        for board in [BPI_F3, MUSE_CARD, MUSE_PI_PRO] {
+            assert_eq!(board.validate_ddr(None), Ok(()));
+            assert_eq!(board.validate_ddr(Some(&partial)), Ok(()));
+        }
+        // Validation does not turn missing EEPROM data into purported hardware facts.
+        assert_eq!(partial.chip_selects, None);
+    }
+
+    #[test]
+    fn incompatible_ddr_records_are_rejected_field_by_field() {
+        let valid = eeprom::DdrConfig {
+            chip_selects: Some(2),
+            memory_type: Some("LPDDR4X"),
+            data_rate: Some(2400),
+            tx_odt: Some(80),
+        };
+        assert_eq!(BPI_F3.validate_ddr(Some(&valid)), Ok(()));
+        for (record, expected) in [
+            (
+                eeprom::DdrConfig {
+                    chip_selects: Some(1),
+                    ..valid
+                },
+                DdrMismatch::ChipSelects,
+            ),
+            (
+                eeprom::DdrConfig {
+                    memory_type: Some("DDR4"),
+                    ..valid
+                },
+                DdrMismatch::MemoryType,
+            ),
+            (
+                eeprom::DdrConfig {
+                    data_rate: Some(3200),
+                    ..valid
+                },
+                DdrMismatch::DataRate,
+            ),
+            (
+                eeprom::DdrConfig {
+                    tx_odt: Some(60),
+                    ..valid
+                },
+                DdrMismatch::TxOdt,
+            ),
+        ] {
+            assert_eq!(BPI_F3.validate_ddr(Some(&record)), Err(expected));
+        }
+    }
+}
