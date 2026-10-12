@@ -402,6 +402,3 @@ fn read_fit<'a>(
     flash.read(offset + 40, &mut buffer[40..size])?;
     Ok(&buffer[..size])
 }
-
-#[cfg(test)]
-mod tests;

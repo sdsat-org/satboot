@@ -106,8 +106,9 @@ never provision, erase or flash a board automatically.
 
 ## Validation boundary
 
-Host tests cover parsing, addresses, kernel runtime overlap, DTB/bootargs/initrd
-consistency, RCPU policy and firmware reservations. Compiling an image does not
+The loader checks parsing, addresses, kernel runtime overlap, DTB/bootargs/initrd
+consistency and firmware reservations; the packer applies the RCPU policy.
+Compiling an image does not
 demonstrate a Linux boot on MUSE Pi Pro. UART, DDR, SBI services and reaching
 Linux userspace still require hardware validation.
 

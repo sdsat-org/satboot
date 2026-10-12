@@ -36,10 +36,9 @@ the tool or printed. The resulting K1 container uses the vendor `secure=0` forma
 in the container; this detects corruption but does not establish a trusted root
 key or prove the board's security state.
 
-Run host tests with `cargo test --locked -p satboot-xtask`. Tests cover ELF entry,
-address gaps, BSS omission, overlapping/oversized sections, K1 image layout,
-signature corruption, size bounds, and CLI parsing. RSA tests generate ephemeral
-keys in memory, so they require no external key files or hardware.
+Run `cargo clippy --locked -p satboot-xtask --bin satboot-xtask -- -D warnings`
+for host-tool static checks. The tools validate ELF layout, image limits and
+generated FSBL structure and signatures before producing output.
 
 `linux-fit` prepares `/chosen`, the SBI memory reservation and the SpacemiT RCPU
 policy, then builds the inline Linux FIT and validates it with the firmware's

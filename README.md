@@ -100,11 +100,9 @@ and [the boot contract](docs/k1-boot.md) before preparing hardware.
 ## Development
 
 ```text
-cargo test --locked --workspace --lib
-cargo test --locked -p satboot-xtask
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --lib -- -D warnings
-cargo clippy --locked -p satboot-xtask --all-targets -- -D warnings
+cargo clippy --locked -p satboot-xtask --bin satboot-xtask -- -D warnings
 ```
 
 See [architecture and adding boards](docs/architecture.md),

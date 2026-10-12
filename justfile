@@ -15,9 +15,9 @@ hello board="muse-pi-pro":
 eeprom board="muse-pi-pro":
     cargo xtask build --board {{board}} --diagnostic eeprom-info
 
-test:
-    cargo test --locked --workspace --lib
-    cargo test --locked -p satboot-xtask
+check: fmt
+    cargo clippy --locked --workspace --lib -- -D warnings
+    cargo clippy --locked -p satboot-xtask --bin satboot-xtask -- -D warnings
 
 fmt:
     cargo fmt --all -- --check

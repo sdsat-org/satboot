@@ -7,14 +7,9 @@ still require a hardware test.
 
 ## Automated checks
 
-- `cargo test --locked --workspace --lib`: 50 tests passed, including Linux
-  headers, complete kernel runtime footprints, DTB fixup workspace, initramfs,
-  board identity, bounded CMA and reserved-memory conflicts.
-- `cargo test --locked -p satboot-xtask`: 16 tests passed, including Linux FIT
-  generation with/without initramfs, preservation of discontiguous RAM banks,
-  RCPU isolation, malformed DTBs, NOR environments and FSBL signatures.
+- `cargo fmt --all -- --check` passed.
 - Host library and xtask Clippy checks passed with `-D warnings`.
-- RV64 Clippy passed for all three MUSE Pi Pro binaries with `-D warnings`.
+- RV64 Clippy passed for all three boards with `-D warnings`.
 
 The localized MSVC linker prints an informational import-library creation
 message when building the host proc macro. Rust labels this as `linker_messages`;

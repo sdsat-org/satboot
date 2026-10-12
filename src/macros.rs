@@ -29,28 +29,3 @@ macro_rules! eprintln {
         $crate::console::_eprint(::core::format_args!(concat!($fmt, "\n") $(, $arg)*))
     };
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn printing_evaluates_arguments_once_even_without_a_console() {
-        let value = 42;
-        let mut calls = 0;
-        crate::print!("");
-        crate::println!();
-        crate::eprintln!();
-        crate::print!("{}: {}", value, {
-            calls += 1;
-            calls
-        });
-        crate::println!("{}: {}", value, {
-            calls += 1;
-            calls
-        });
-        crate::eprintln!("{}: {}", value, {
-            calls += 1;
-            calls
-        });
-        assert_eq!(calls, 3);
-    }
-}

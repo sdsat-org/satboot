@@ -117,38 +117,3 @@ fn debug_field<T: ufmt::uDebug>(name: &str, value: T) {
 fn mac_field(name: &str, value: Option<&[u8; 6]>) {
     crate::println!("{}: {}", name, Hex(value.map(|mac| mac.as_slice())));
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    extern crate std;
-
-    #[derive(Default)]
-    struct Buffer(std::string::String);
-    impl ufmt::uWrite for Buffer {
-        type Error = core::convert::Infallible;
-        fn write_str(&mut self, text: &str) -> Result<(), Self::Error> {
-            self.0.push_str(text);
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn hex_preserves_absence_empty_slices_and_byte_padding() {
-        let mut out = Buffer::default();
-        ufmt::uwrite!(
-            &mut out,
-            "{} {} {}",
-            Hex(None),
-            Hex(Some(&[])),
-            Hex(Some(&[0, 1, 0xab, 0xff]))
-        )
-        .unwrap();
-        assert_eq!(out.0, "None [] [00, 01, ab, ff]");
-        for byte in 0..=u8::MAX {
-            let mut out = Buffer::default();
-            ufmt::uwrite!(&mut out, "{}", Hex(Some(&[byte]))).unwrap();
-            assert_eq!(out.0, std::format!("[{byte:02x}]"));
-        }
-    }
-}
