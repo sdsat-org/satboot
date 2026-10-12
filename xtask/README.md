@@ -10,6 +10,8 @@ cargo xtask build --board muse-pi-pro --diagnostic hello-world
 cargo xtask build --board muse-pi-pro --diagnostic eeprom-info
 cargo xtask pack --elf target/muse-pi-pro/satboot.elf --keys /path/to/keys
 cargo xtask inspect target/muse-pi-pro/satboot-FSBL.bin
+cargo xtask linux-fit --board muse-pi-pro --kernel Image --dtb muse-pi-pro-linux.dtb --bootargs "console=ttyS0,115200 earlycon rdinit=/init" --initrd rootfs.cpio.gz --output linux.itb
+cargo xtask linux-env --capacity 16M --output env.bin
 ```
 
 Install the `riscv64imac-unknown-none-elf` target before building firmware.
@@ -38,6 +40,13 @@ Run host tests with `cargo test --locked -p satboot-xtask`. Tests cover ELF entr
 address gaps, BSS omission, overlapping/oversized sections, K1 image layout,
 signature corruption, size bounds, and CLI parsing. RSA tests generate ephemeral
 keys in memory, so they require no external key files or hardware.
+
+`linux-fit` prepares `/chosen`, the SBI memory reservation and the SpacemiT RCPU
+policy, then builds the inline Linux FIT and validates it with the firmware's
+own parser. Input DTB memory banks and device descriptions must match the board.
+`linux-env` creates the dedicated NOR layout for `opensbi` and `linux`; capacity
+must match the actual flash. See [Linux boot requirements](../docs/linux.md) for
+addresses, image limits and DTB requirements. Neither command flashes hardware.
 
 ## Provenance
 

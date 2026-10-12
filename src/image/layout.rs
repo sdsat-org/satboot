@@ -28,7 +28,7 @@ pub struct Layout {
     pub env_size: usize,
     pub fsbl: Partition,
     pub sbi: Partition,
-    pub payload: Partition,
+    pub kernel: Partition,
 }
 
 impl Layout {
@@ -127,13 +127,13 @@ impl Layout {
         let env = find("env")?;
         let fsbl = find("fsbl")?;
         let sbi = find("opensbi")?;
-        let payload = find("uboot")?;
+        let kernel = find("linux")?;
         if env.offset != ENV_OFFSET
             || env.size < env_size as u32
             || fsbl.offset != 0x20000
             || fsbl.size != 0x40000
             || sbi.offset < ENV_OFFSET + env.size
-            || payload.offset < ENV_OFFSET + env.size
+            || kernel.offset < ENV_OFFSET + env.size
         {
             return Err(Error::Bounds);
         }
@@ -141,7 +141,7 @@ impl Layout {
             env_size,
             fsbl,
             sbi,
-            payload,
+            kernel,
         })
     }
 }

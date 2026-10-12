@@ -2,6 +2,7 @@
 
 mod elf2bin;
 mod fsbl;
+mod linux_fit;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -45,6 +46,31 @@ enum Command {
     },
     /// Check the K1 FSBL structure and signatures using its embedded public keys.
     Inspect { fsbl: PathBuf },
+    /// Build a Linux FIT with a prepared board DTB, boot arguments and optional initramfs.
+    LinuxFit {
+        #[arg(long, value_enum)]
+        board: Board,
+        /// Uncompressed RV64 Linux Image, not ELF or Image.gz.
+        #[arg(long)]
+        kernel: PathBuf,
+        /// Linux board DTB with the correct installed memory banks.
+        #[arg(long)]
+        dtb: PathBuf,
+        #[arg(long)]
+        bootargs: String,
+        #[arg(long)]
+        initrd: Option<PathBuf>,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Create a NOR environment for the dedicated opensbi/linux partition layout.
+    LinuxEnv {
+        /// Actual NOR capacity in bytes, optionally using K/M suffixes or hexadecimal.
+        #[arg(long, value_parser = parse_capacity)]
+        capacity: u32,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -55,6 +81,14 @@ enum Board {
 }
 
 impl Board {
+    const fn product(self) -> &'static str {
+        match self {
+            Self::BpiF3 => satboot::board::BPI_F3.product_name,
+            Self::MuseCard => satboot::board::MUSE_CARD.product_name,
+            Self::MusePiPro => satboot::board::MUSE_PI_PRO.product_name,
+        }
+    }
+
     const fn name(self) -> &'static str {
         match self {
             Self::BpiF3 => "bpi-f3",
@@ -96,6 +130,50 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Build { board, diagnostic } => build(board, diagnostic),
+        Command::LinuxFit {
+            board,
+            kernel,
+            dtb,
+            bootargs,
+            initrd,
+            output,
+        } => {
+            for input in [Some(&kernel), Some(&dtb), initrd.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                ensure_distinct(input, &output)?;
+            }
+            let kernel = fs::read(&kernel).with_context(|| format!("read {}", kernel.display()))?;
+            let dtb = fs::read(&dtb).with_context(|| format!("read {}", dtb.display()))?;
+            let initrd = initrd
+                .map(|path| fs::read(&path).with_context(|| format!("read {}", path.display())))
+                .transpose()?;
+            let bytes =
+                linux_fit::create(&kernel, &dtb, initrd.as_deref(), board.product(), &bootargs)?;
+            fs::write(&output, &bytes).with_context(|| format!("write {}", output.display()))?;
+            println!(
+                "{}: {} bytes; board {}",
+                output.display(),
+                bytes.len(),
+                board.name()
+            );
+            println!("Linux entry: 0x1000000; DTB: 0x3000000; optional initramfs: 0x3400000");
+            println!(
+                "SpacemiT RCPU remoteproc is disabled in the prepared DTB to keep SBI memory exclusive."
+            );
+            Ok(())
+        }
+        Command::LinuxEnv { capacity, output } => {
+            let bytes = linux_fit::environment(capacity)?;
+            fs::write(&output, &bytes).with_context(|| format!("write {}", output.display()))?;
+            println!(
+                "{}: {} bytes; environment offset 0x60000; Linux FIT offset 0xf0000",
+                output.display(),
+                bytes.len()
+            );
+            Ok(())
+        }
         Command::Pack { elf, keys, output } => {
             let output = output.unwrap_or_else(|| output_path(&elf));
             ensure_distinct(&elf, &output)?;
@@ -182,9 +260,26 @@ fn output_path(input: &Path) -> PathBuf {
 fn ensure_distinct(input: &Path, output: &Path) -> Result<()> {
     ensure!(
         !output.exists() || fs::canonicalize(input)? != fs::canonicalize(output)?,
-        "output must not overwrite the input ELF"
+        "output must not overwrite an input file"
     );
     Ok(())
+}
+
+fn parse_capacity(value: &str) -> std::result::Result<u32, String> {
+    let (digits, scale) = match value.as_bytes().last() {
+        Some(b'K' | b'k') => (&value[..value.len() - 1], 1024),
+        Some(b'M' | b'm') => (&value[..value.len() - 1], 1024 * 1024),
+        _ => (value, 1),
+    };
+    let number = if let Some(hex) = digits.strip_prefix("0x") {
+        u32::from_str_radix(hex, 16)
+    } else {
+        digits.parse::<u32>()
+    };
+    number
+        .ok()
+        .and_then(|n| n.checked_mul(scale))
+        .ok_or_else(|| "invalid NOR capacity".to_owned())
 }
 
 #[cfg(test)]
@@ -224,6 +319,39 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["satboot-xtask", "inspect", "satboot-FSBL.bin"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["satboot-xtask", "linux-fit", "--board", "muse-pi-pro"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "satboot-xtask",
+                "linux-fit",
+                "--board",
+                "muse-pi-pro",
+                "--kernel",
+                "Image",
+                "--dtb",
+                "linux.dtb",
+                "--bootargs",
+                "rdinit=/init",
+                "--output",
+                "linux.itb"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "satboot-xtask",
+                "linux-env",
+                "--capacity",
+                "16M",
+                "--output",
+                "env.bin"
+            ])
+            .is_ok()
+        );
+        assert!(parse_capacity("4096M").is_err());
+        assert_eq!(parse_capacity("16M"), Ok(16 * 1024 * 1024));
     }
 
     #[test]

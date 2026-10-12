@@ -1,7 +1,9 @@
-//! Official K1 NOR FIT loading with CRC32 integrity checks.
+//! K1 NOR loading of dynamic SBI firmware and an uncompressed Linux Image.
 
+mod bootdt;
 mod fdt;
 pub mod layout;
+mod linux;
 mod memory;
 
 use embedded_storage::nor_flash::ReadNorFlash;
@@ -9,9 +11,13 @@ use fdt::{Fdt, Node, integer, text, word};
 use layout::{ENV_MAX_SIZE, ENV_OFFSET, Layout, crc32};
 
 const SBI_LIMIT: usize = 0x0008_0000;
-const PAYLOAD_LIMIT: usize = 0x0080_0000;
-const STAGING_START: usize = 0x0100_0000;
-const STAGING_SIZE: usize = SBI_LIMIT + PAYLOAD_LIMIT;
+const LINUX_FIT_LIMIT: usize = 0x0200_0000;
+// OpenSBI may grow the board DTB before handing it to Linux. Its final extent
+// must remain inside this reserved destination, including all applied fixups.
+pub(super) const DTB_WORKSPACE: usize = 0x0010_0000;
+const STAGING_START: usize = 0x0400_0000;
+const STAGING_SIZE: usize = SBI_LIMIT + LINUX_FIT_LIMIT;
+const _: () = assert!(STAGING_START + STAGING_SIZE <= 0x0800_0000);
 
 type Result<T> = core::result::Result<T, Error>;
 
@@ -57,7 +63,7 @@ impl From<qspi_nor::Error<spacemit_hal::qspi::Error>> for Error {
 }
 
 /// A validated physical image destination.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Segment {
     /// Physical DRAM load address.
     pub address: usize,
@@ -78,19 +84,23 @@ impl Segment {
     }
 }
 
-/// Verified SBI, next-stage and DTB destinations without a firmware handoff.
+/// Verified SBI, Linux and DTB destinations without a firmware handoff.
 #[derive(Debug)]
 pub struct LoadedImages {
     /// SBI code and data.
     pub sbi: Segment,
-    /// Next-stage code and data.
-    pub payload: Segment,
-    /// Board device tree.
+    /// Linux Image bytes copied from the FIT.
+    pub kernel: Segment,
+    /// Complete Linux runtime region, including BSS declared by its Image header.
+    pub kernel_footprint: Segment,
+    /// Board device tree bytes, with a separate 1 MiB destination reserved for SBI fixups.
     pub dtb: Segment,
+    /// Optional initramfs bytes, matching the DTB's chosen initrd range.
+    pub initrd: Option<Segment>,
     /// SBI entry address.
     pub sbi_entry: usize,
-    /// Next-stage entry address.
-    pub payload_entry: usize,
+    /// Linux Image entry address.
+    pub kernel_entry: usize,
 }
 
 struct Image<'a> {
@@ -102,8 +112,10 @@ struct Image<'a> {
 /// Validated image bytes retained until copying finishes.
 pub struct Images<'a> {
     sbi: Image<'a>,
-    payload: Image<'a>,
+    kernel: Image<'a>,
+    kernel_footprint: Segment,
     dtb: Image<'a>,
+    initrd: Option<Image<'a>>,
 }
 
 impl Images<'_> {
@@ -111,21 +123,26 @@ impl Images<'_> {
     pub fn destinations(&self) -> LoadedImages {
         LoadedImages {
             sbi: self.sbi.destination,
-            payload: self.payload.destination,
+            kernel: self.kernel.destination,
+            kernel_footprint: self.kernel_footprint,
             dtb: self.dtb.destination,
+            initrd: self.initrd.as_ref().map(|image| image.destination),
             sbi_entry: self.sbi.entry,
-            payload_entry: self.payload.entry,
+            kernel_entry: self.kernel.entry,
         }
     }
 }
 
-/// Validates vendor FIT images using the EEPROM product or FIT default.
+/// Validates SBI and Linux FITs for an explicitly resolved board product.
+///
+/// The Linux FIT must contain one configuration whose description exactly matches
+/// the selected board. Its default configuration never overrides board identity.
 pub fn inspect<'a>(
     sbi: &'a [u8],
-    payload: &'a [u8],
+    linux_fit: &'a [u8],
     product_name: Option<&str>,
 ) -> Result<Images<'a>> {
-    if sbi.len() > SBI_LIMIT || payload.len() > PAYLOAD_LIMIT {
+    if sbi.len() > SBI_LIMIT {
         return Err(Error::Bounds);
     }
     let sbi_root = Fdt::root(sbi)?;
@@ -138,46 +155,73 @@ pub fn inspect<'a>(
     // Vendor SPL uses this tag for the dynamic SBI handoff, including compatible RustSBI firmware.
     check(sbi_node, "os", "opensbi")?;
     check(sbi_node, "arch", "riscv")?;
-    let sbi = read_image(sbi_node, None)?;
+    let sbi = read_image(sbi_node)?;
     // Reserve the complete low 2 MiB for SBI firmware, including its own BSS/scratch.
     sbi.destination.within(0, 0x0020_0000)?;
     check_entry(&sbi)?;
 
-    let root = Fdt::root(payload)?;
+    let linux = inspect_linux(linux_fit, product_name.ok_or(Error::Missing)?)?;
+    Ok(Images {
+        sbi,
+        kernel: linux.kernel,
+        kernel_footprint: linux.kernel_footprint,
+        dtb: linux.dtb,
+        initrd: linux.initrd,
+    })
+}
+
+/// Validates a complete Linux FIT without reading firmware or touching hardware.
+///
+/// This uses the same header, board selection, destination and DTB checks as the
+/// boot path and can be used by a host-side image packer.
+pub fn validate_linux_fit(bytes: &[u8], product_name: &str) -> Result<()> {
+    inspect_linux(bytes, product_name).map(|_| ())
+}
+
+struct LinuxImages<'a> {
+    kernel: Image<'a>,
+    kernel_footprint: Segment,
+    dtb: Image<'a>,
+    initrd: Option<Image<'a>>,
+}
+
+fn inspect_linux<'a>(bytes: &'a [u8], product_name: &str) -> Result<LinuxImages<'a>> {
+    if bytes.len() > LINUX_FIT_LIMIT {
+        return Err(Error::Bounds);
+    }
+    if product_name.is_empty() {
+        return Err(Error::Missing);
+    }
+    let root = Fdt::root(bytes)?;
     let configurations = root.child("configurations")?;
-    let configuration = if let Some(product_name) = product_name {
-        let mut selected = None;
-        for node in configurations.children() {
-            let node = node?;
-            if node.property("description")?.map(text).transpose()? == Some(product_name)
-                && selected.replace(node).is_some()
-            {
-                return Err(Error::Format);
-            }
+    let mut selected = None;
+    for node in configurations.children() {
+        let node = node?;
+        if node.property("description")?.map(text).transpose()? == Some(product_name)
+            && selected.replace(node).is_some()
+        {
+            return Err(Error::Format);
         }
-        selected.ok_or(Error::Missing)?
-    } else {
-        configurations.child(text(configurations.required("default")?)?)?
-    };
+    }
+    let configuration = selected.ok_or(Error::Missing)?;
+    // A Linux configuration has no executable loadables or a separate firmware stage.
+    for property in ["loadables", "firmware"] {
+        if configuration.property(property)?.is_some() {
+            return Err(Error::Unsupported);
+        }
+    }
     let images = root.child("images")?;
-    let payload_node = images.child(text(configuration.required("loadables")?)?)?;
-    check(payload_node, "type", "standalone")?;
-    check(payload_node, "os", "U-Boot")?;
-    check(payload_node, "arch", "riscv")?;
-    let payload = read_image(payload_node, None)?;
-    payload.destination.within(0x0020_0000, STAGING_START)?;
-    check_entry(&payload)?;
+    let kernel_node = images.child(text(configuration.required("kernel")?)?)?;
+    check(kernel_node, "type", "kernel")?;
+    check(kernel_node, "os", "linux")?;
+    check(kernel_node, "arch", "riscv")?;
+    let kernel = read_image(kernel_node)?;
+    let kernel_footprint = linux::validate(kernel.data, kernel.destination.address, kernel.entry)?;
+    kernel_footprint.within(0x0020_0000, STAGING_START)?;
 
     let dtb_node = images.child(text(configuration.required("fdt")?)?)?;
     check(dtb_node, "type", "flat_dt")?;
-    // Vendor spl_fit_append_fdt appends an unaddressed DTB after u-boot-nodtb.bin.
-    let appended = payload
-        .destination
-        .end()?
-        .checked_add(7)
-        .ok_or(Error::Bounds)?
-        & !7;
-    let dtb = read_image(dtb_node, Some(appended))?;
+    let dtb = read_image(dtb_node)?;
     dtb.destination.within(0x0020_0000, STAGING_START)?;
     if !dtb.destination.address.is_multiple_of(8)
         || dtb.data.len() > 0x40000
@@ -185,16 +229,44 @@ pub fn inspect<'a>(
     {
         return Err(Error::Bounds);
     }
+    let dtb_workspace = Segment {
+        address: dtb.destination.address,
+        size: DTB_WORKSPACE,
+    };
+    dtb_workspace.within(0x0020_0000, STAGING_START)?;
     Fdt::root(dtb.data)?;
-    let segments = [sbi.destination, payload.destination, dtb.destination];
+    let initrd = configuration
+        .property("ramdisk")?
+        .map(|name| {
+            let node = images.child(text(name)?)?;
+            check(node, "type", "ramdisk")?;
+            check(node, "os", "linux")?;
+            check(node, "arch", "riscv")?;
+            let image = read_image(node)?;
+            image.destination.within(0x0020_0000, STAGING_START)?;
+            Ok::<_, Error>(image)
+        })
+        .transpose()?;
+    let segments = [
+        Some(kernel_footprint),
+        Some(dtb_workspace),
+        initrd.as_ref().map(|image: &Image<'_>| image.destination),
+    ];
     for (index, first) in segments.iter().enumerate() {
-        for second in &segments[index + 1..] {
+        let Some(first) = first else { continue };
+        for second in segments[index + 1..].iter().flatten() {
             if first.address < second.end()? && second.address < first.end()? {
                 return Err(Error::Overlap);
             }
         }
     }
-    Ok(Images { sbi, payload, dtb })
+    bootdt::validate(dtb.data, kernel_footprint, dtb.destination, segments[2])?;
+    Ok(LinuxImages {
+        kernel,
+        kernel_footprint,
+        dtb,
+        initrd,
+    })
 }
 
 fn check(node: Node<'_>, name: &str, expected: &str) -> Result<()> {
@@ -214,7 +286,7 @@ fn check_entry(image: &Image<'_>) -> Result<()> {
     Ok(())
 }
 
-fn read_image(node: Node<'_>, fallback: Option<usize>) -> Result<Image<'_>> {
+fn read_image(node: Node<'_>) -> Result<Image<'_>> {
     check(node, "compression", "none")?;
     // The inspected official FITs use inline data, not external data or overlays.
     for name in ["data-offset", "data-position", "data-size"] {
@@ -237,12 +309,7 @@ fn read_image(node: Node<'_>, fallback: Option<usize>) -> Result<Image<'_>> {
     if !verified {
         return Err(Error::Missing);
     }
-    let address = node
-        .property("load")?
-        .map(integer)
-        .transpose()?
-        .or(fallback)
-        .ok_or(Error::Missing)?;
+    let address = integer(node.required("load")?)?;
     let entry = node
         .property("entry")?
         .map(integer)
@@ -276,25 +343,28 @@ pub(crate) unsafe fn load(
         layout.env_size
     );
     crate::eprintln!(
-        "NOR partitions: SBI {:#x}+{:#x}, next stage {:#x}+{:#x}",
+        "NOR partitions: SBI {:#x}+{:#x}, Linux {:#x}+{:#x}",
         layout.sbi.offset,
         layout.sbi.size,
-        layout.payload.offset,
-        layout.payload.size
+        layout.kernel.offset,
+        layout.kernel.size
     );
-    let (sbi, payload) = staging.split_at_mut(SBI_LIMIT);
+    let (sbi, kernel) = staging.split_at_mut(SBI_LIMIT);
     let sbi = read_fit(
         flash,
         layout.sbi.offset,
         &mut sbi[..SBI_LIMIT.min(layout.sbi.size as usize)],
     )?;
-    let payload = read_fit(
+    let kernel = read_fit(
         flash,
-        layout.payload.offset,
-        &mut payload[..PAYLOAD_LIMIT.min(layout.payload.size as usize)],
+        layout.kernel.offset,
+        &mut kernel[..LINUX_FIT_LIMIT.min(layout.kernel.size as usize)],
     )?;
-    let images = inspect(sbi, payload, product_name)?;
-    for image in [&images.sbi, &images.payload, &images.dtb] {
+    let images = inspect(sbi, kernel, product_name)?;
+    for image in [&images.sbi, &images.kernel, &images.dtb]
+        .into_iter()
+        .chain(images.initrd.iter())
+    {
         // SAFETY: All destinations were bounded, checked for overlap and verified before any copy.
         unsafe { memory::copy(image.destination.address, image.data)? };
     }

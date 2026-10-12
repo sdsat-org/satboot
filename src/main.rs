@@ -39,14 +39,17 @@ fn main(mut b: Board) {
         }
     };
     println!("DDR firmware returned: {}", firmware_status);
-    println!("NOR: loading SBI firmware, next stage and DTB...");
+    println!("NOR: loading SBI firmware, Linux and DTB...");
     // SAFETY: Training succeeded; DRAM is unused and all other harts and DMA remain stopped.
     match unsafe { b.load_images(Some(product)) } {
         Ok(images) => {
             println!(
-                "Loaded: SBI {} bytes, next stage {} bytes, DTB {} bytes",
-                images.sbi.size, images.payload.size, images.dtb.size
+                "Loaded: SBI {} bytes, Linux {} bytes, DTB {} bytes",
+                images.sbi.size, images.kernel.size, images.dtb.size
             );
+            if let Some(initrd) = images.initrd {
+                println!("Initramfs: {} bytes at {:#x}", initrd.size, initrd.address);
+            }
             // SAFETY: Verified images, sole boot hart, completed PIO and no further Rust execution.
             unsafe { satboot::handoff::enter(images) };
         }

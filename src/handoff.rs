@@ -1,4 +1,4 @@
-//! Single-hart K1 dynamic SBI handoff; SBI owns subsequent hart startup.
+//! K1 Linux boot via dynamic SBI firmware; SBI owns subsequent hart startup.
 
 use crate::image::LoadedImages;
 
@@ -54,12 +54,12 @@ pub unsafe fn enter(images: LoadedImages) -> ! {
         }
         let parameters = core::ptr::addr_of_mut!(PARAMETERS);
         // SAFETY: The sole boot hart owns this cache-line-aligned SRAM object until handoff.
-        unsafe { parameters.write(Parameters(DynamicInfo::new(images.payload_entry))) };
+        unsafe { parameters.write(Parameters(DynamicInfo::new(images.kernel_entry))) };
         crate::eprintln!(
-            "SBI handoff: hart=0 entry={:#x} dtb={:#x} next={:#x}; secondary harts stay off",
+            "SBI handoff: hart=0 entry={:#x} dtb={:#x} Linux={:#x}; secondary harts stay off",
             images.sbi_entry,
             images.dtb.address,
-            images.payload_entry
+            images.kernel_entry
         );
         // Loaded images were cleaned and read back; publish the remaining parameter cache line.
         // Keep X60 caches and CCI enabled, as vendor SPL does; SBI initializes its own contexts.

@@ -21,7 +21,7 @@ pub(super) struct Nor {
 }
 
 impl Board {
-    /// Reads and verifies the official NOR images into trained DRAM without executing them.
+    /// Reads and verifies the SBI and Linux NOR images into trained DRAM.
     ///
     /// # Safety
     /// Call after successful DDR training on the sole M-mode boot hart.

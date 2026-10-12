@@ -591,6 +591,7 @@ dependencies = [
  "clap",
  "object",
  "rsa",
+ "satboot",
  "sha2",
 ]
 

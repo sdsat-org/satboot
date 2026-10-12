@@ -49,19 +49,28 @@ explicit PEM inputs and verifies the generated container. Structural/signature
 inspection against embedded keys does not establish a trusted root key.
 
 The NOR loader uses polling QSPI and a CRC-checked environment at `0x60000`.
-It locates `opensbi` and `uboot` partitions, accepts the supported in-tree FIT
+It locates `opensbi` and `linux` partitions, accepts the supported in-tree FIT
 encoding and CRC32 hashes, and selects the board's explicit product description.
 The SBI FIT may contain a compatible RustSBI dynamic firmware even though the
 vendor FIT OS tag is `opensbi`.
 
-SBI occupies the low 2 MiB, U-Boot/DTB must stay below 16 MiB, and source FITs
-are staged from 16 MiB. Loading checks addresses and overlaps and reserves the
-low 128 MiB during boot. DRAM physically starts at zero on K1.
+SBI occupies the low 2 MiB. Linux, DTB (including 1 MiB of fixup workspace) and
+optional initramfs remain below 64 MiB; source FITs are staged at
+`0x04000000..0x06080000`. Loading checks the Linux header's full runtime size,
+DT memory banks, firmware reservations and all overlaps, reserving low 128 MiB
+during boot. DRAM physically starts at zero on K1. The host packer loads Linux
+at 16 MiB, DTB at 48 MiB and initramfs at 52 MiB. See [Linux requirements](linux.md).
 
 The final M-mode handoff uses `a0=0`, `a1=dtb`, `a2=DynamicInfo` (magic
-`0x4942534f`, version 2, S-mode next stage, boot hart 0). Data is flushed and
+`0x4942534f`, version 2, S-mode Linux entry, boot hart 0). Data is flushed and
 instructions synchronized before transfer. Secondary-hart startup is delegated
 to SBI. No flash erase/write or automatic hardware download is part of a build.
+
+The SBI firmware must implement the K1/M1 platform and transfer to Linux with
+`a0=hartid`, `a1=dtb` and `satp=0`. Its resident code, BSS and scratch must fit
+the low 2 MiB, and its final DTB must fit the reserved 1 MiB workspace. Generic
+QEMU firmware is not a substitute for K1 platform support. Linux may use SBI
+HSM to start other harts; timer service must match its SBI TIME/Sstc support.
 
 ## Primary sources
 

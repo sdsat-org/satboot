@@ -9,11 +9,11 @@ src/main.rs              boot sequence and failure diagnostics
 src/board.rs             compile-time BoardSpec and EEPROM compatibility
 src/platform/            K1/M1 clocks, UART, PMIC, EEPROM and QSPI setup
 src/ddr.rs               fixed DDR firmware ABI and destructive memory checks
-src/image/               checked NOR environment, FDT/FIT and DRAM loading
-src/handoff.rs           dynamic SBI parameters and final cache/CSR transition
+src/image/               checked NOR environment, Linux Image/FIT/DTB and DRAM loading
+src/handoff.rs           dynamic SBI parameters selecting Linux and cache/CSR transition
 src/console.rs           boot-hart-only UART ownership
 macros/                 board-entry adapter around spacemit-rt
-xtask/                  host build, ELF extraction and FSBL packing/inspection
+xtask/                  host build, FSBL tooling, Linux FIT and DTB preparation
 link.x                  SRAM/DDR-firmware/stack layout contract
 ```
 
@@ -31,11 +31,14 @@ must match the selected board; a mismatched board or incompatible recorded DDR
 parameter stops boot. This check is compatibility validation, not device
 authentication.
 
-The first loader reads the vendor NOR partition table and two FITs. It verifies
-their shape, CRCs, load regions, entry addresses, staging separation and DTB
+The loader reads a CRC-protected NOR partition table and the `opensbi` and `linux`
+FITs. It verifies their shape, CRCs, kernel header, complete runtime footprint,
+entry addresses, staging separation, optional initramfs and final Linux DTB
 before copying any executable image. Physical DRAM address zero is handled with
 architecture stores, never a null Rust reference. Only after cache writeback
-and readback does the boot hart transfer to SBI. Runtime support for starting
+and readback does the boot hart transfer to SBI with Linux as its S-mode entry.
+The DTB reserves the complete SBI runtime region; a separate 1 MiB workspace
+is kept for SBI DTB fixups. Runtime support for starting
 the other harts belongs to the selected SBI firmware.
 
 Future storage adapters should feed the same checked image pipeline. Satellite

@@ -2,16 +2,17 @@
 
 Bootloader for satellite firmware and system software.
 
-satboot performs early board initialization and loads the next firmware stage.
+satboot initializes the board and loads Linux through SBI firmware.
 The first boot path targets **SpacemiT MUSE Pi Pro / K1-M1 platform** and takes the place
-of U-Boot SPL: BootROM -> satboot -> dynamic SBI firmware -> U-Boot proper.
-The next-stage images are read from an existing vendor-compatible SPI NOR layout.
+of U-Boot SPL: **BootROM -> satboot -> dynamic SBI firmware -> Linux**.
+It reads separate SBI and Linux FITs from SPI NOR. No U-Boot executable is loaded.
 
 ## Status
 
 The implementation includes SRAM startup through `spacemit-rt`, UART0, EEPROM
 identity checks, SPM8821 power setup, DDR training and memory checks, QSPI NOR
-reads, FIT validation, and the dynamic SBI handoff. This satboot revision has not
+reads, Linux Image/FIT validation, boot DTB preparation, optional initramfs loading,
+and the dynamic SBI handoff with Linux as its S-mode entry. This revision has not
 yet been boot-tested on hardware. It is an initial development release.
 
 | Build configuration | SoC | Status |
@@ -20,7 +21,8 @@ yet been boot-tested on hardware. It is an initial development release.
 | `bpi-f3` | K1 | Shared platform port; hardware validation pending |
 | `muse-card` | M1 | Shared platform port; hardware validation pending |
 
-SD/eMMC boot, arbitrary FIT encodings, recovery/update policy, and authenticated
+SD/eMMC loading by satboot, compressed kernel Images, arbitrary FIT encodings,
+recovery/update policy, and authenticated
 payload verification are not implemented. FIT CRC32 checks detect corruption;
 they do not authenticate software. DDR initialization uses the unmodified,
 hash-pinned SpacemiT v0.2 training firmware included with its redistribution
@@ -74,10 +76,26 @@ fastboot stage target/muse-pi-pro/satboot-FSBL.bin
 fastboot continue
 ```
 
-Connect UART0 at 115200 8N1. An existing compatible NOR installation must provide
-the environment, SBI FIT and U-Boot/DTB FIT. The supplied build/pack commands do
-not access a board or write flash. See [the boot contract](docs/k1-boot.md) before
-hardware testing.
+Connect UART0 at 115200 8N1. NOR must contain the direct-Linux partition layout
+with an environment, SBI FIT and Linux FIT. A legacy `uboot` partition is not a
+Linux payload. The supplied commands create files without accessing hardware.
+
+## Prepare Linux
+
+Supply an uncompressed RV64 S-mode Linux `Image` and its matching Linux board
+DTB with the correct memory banks for the installed board. The packer preserves
+the hardware tree, installs boot arguments and SBI reservations, and disables
+the SpacemiT RCPU that conflicts with the current SBI memory contract.
+
+```text
+cargo xtask linux-fit --board muse-pi-pro --kernel Image --dtb muse-pi-pro-linux.dtb --bootargs "console=ttyS0,115200 earlycon rdinit=/init" --initrd rootfs.cpio.gz --output linux.itb
+cargo xtask linux-env --capacity 16M --output env.bin
+```
+
+Omit `--initrd` for a built-in initramfs or a kernel configured to mount its root
+filesystem from another device. Use the actual NOR capacity, and ensure the FIT
+fits its Linux partition. See [Linux image and DTB requirements](docs/linux.md)
+and [the boot contract](docs/k1-boot.md) before preparing hardware.
 
 ## Development
 
